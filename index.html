@@ -457,6 +457,10 @@
                         <span style="font-size:13px; font-weight:600; color:rgba(255,255,255,0.7);">Live Feed</span>
                     </div>
                 </div>
+
+                <select id="cameraSelect" style="margin-top: 20px; max-width: 400px; cursor: pointer;">
+                    <option value="" disabled selected>Loading cameras...</option>
+                </select>
             </div>
 
             <div class="col-right">
@@ -481,19 +485,72 @@
         const resultBox = document.getElementById('resultBox');
         const apiKeyInput = document.getElementById('apiKeyInput');
         const feedDot = document.getElementById('feedDot');
+        const cameraSelect = document.getElementById('cameraSelect');
 
         let stream = null;
         let isProcessing = false;
 
-        async function startCamera() {
+        async function getCameras() {
             try {
-                stream = await navigator.mediaDevices.getUserMedia({
-                    video: {
-                        width: { ideal: 1280 },
-                        height: { ideal: 720 },
-                        facingMode: "environment"
-                    }
+                // Request permission first to get labels
+                await navigator.mediaDevices.getUserMedia({ video: true });
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const videoDevices = devices.filter(device => device.kind === 'videoinput');
+
+                cameraSelect.innerHTML = '';
+                videoDevices.forEach((device, index) => {
+                    const option = document.createElement('option');
+                    option.value = device.deviceId;
+                    option.text = device.label || `Camera ${index + 1}`;
+                    cameraSelect.appendChild(option);
                 });
+
+                if (videoDevices.length > 0) {
+                    // If we have an active stream, select that device in the dropdown
+                    if (stream) {
+                        const currentTrack = stream.getVideoTracks()[0];
+                        const text = currentTrack.label;
+                        // Try to match by label since track.getSettings().deviceId might be masked
+                        for (let i = 0; i < cameraSelect.options.length; i++) {
+                            if (cameraSelect.options[i].text === text) {
+                                cameraSelect.selectedIndex = i;
+                                break;
+                            }
+                        }
+                    } else {
+                        startCamera(videoDevices[0].deviceId);
+                    }
+                } else {
+                    const option = document.createElement('option');
+                    option.text = "No cameras found";
+                    cameraSelect.appendChild(option);
+                }
+            } catch (err) {
+                console.error("Error enumerating devices:", err);
+                cameraSelect.innerHTML = '<option>Error loading cameras</option>';
+            }
+        }
+
+        async function startCamera(deviceId = null) {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+            }
+
+            const constraints = {
+                video: {
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 },
+                    deviceId: deviceId ? { exact: deviceId } : undefined
+                }
+            };
+
+            // If no specific device requested, prefer environment facing
+            if (!deviceId) {
+                constraints.video.facingMode = "environment";
+            }
+
+            try {
+                stream = await navigator.mediaDevices.getUserMedia(constraints);
                 video.srcObject = stream;
 
                 video.onloadedmetadata = () => {
@@ -503,17 +560,25 @@
             } catch (err) {
                 console.error("Camera error:", err);
                 feedDot.classList.remove('active');
-                try {
-                    stream = await navigator.mediaDevices.getUserMedia({ video: true });
-                    video.srcObject = stream;
-                    feedDot.classList.add('active');
-                } catch (e) {
-                    alert("Could not access camera. Please allow permissions.");
-                    feedDot.classList.remove('active');
+
+                // Fallback attempt if specific request failed
+                if (deviceId) {
+                    console.warn("Retrying with default camera...");
+                    startCamera(null);
+                    return;
                 }
+
+                alert("Could not access camera. Please allow permissions.");
             }
         }
-        startCamera();
+
+        cameraSelect.addEventListener('change', (e) => {
+            startCamera(e.target.value);
+        });
+
+        // Initialize
+        getCameras();
+
 
         document.addEventListener('keydown', (e) => {
             if (e.code === 'Space' && !isProcessing) {
@@ -719,14 +784,37 @@
 
         async function readLoop() {
             if (!port || !port.readable) return;
+            const decoder = new TextDecoder();
+            let inputBuffer = '';
+
             try {
                 while (true) {
-                    const r = await reader.read();
-                    if (!r) break;
-                    const { value, done } = r;
+                    const { value, done } = await reader.read();
                     if (done) break;
+                    if (value) {
+                        const chunk = decoder.decode(value, { stream: true });
+                        inputBuffer += chunk;
+
+                        // Process complete lines
+                        if (inputBuffer.includes('\n')) {
+                            const lines = inputBuffer.split('\n');
+                            inputBuffer = lines.pop(); // Keep the last incomplete fragment
+
+                            for (const line of lines) {
+                                const cleanLine = line.trim();
+                                // Check for '0' trigger
+                                if (cleanLine === '0') {
+                                    if (!isProcessing) {
+                                        console.log("Received 0 from Arduino. Auto-capturing...");
+                                        captureAndAnalyze();
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             } catch (e) {
+                console.error("Serial Read Error:", e);
             } finally {
                 try { if (reader) { reader.releaseLock(); } } catch (e) { }
                 reader = null;
