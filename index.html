@@ -86,7 +86,7 @@
 
         .main-title {
             grid-column: 1 / -1;
-            margin: 0;
+            margin: 20px 0;
             font-size: 28px;
             font-weight: 800;
             background: var(--accent);
@@ -100,7 +100,7 @@
 
         .video-container {
             width: 100%;
-            aspect-ratio: 1 / 1;
+            aspect-ratio: 5 / 4;
             background: #000;
             border-radius: 24px;
             border: 2px solid rgba(255, 255, 255, 0.05);
@@ -125,6 +125,12 @@
         .card-hardware {
             flex: 2;
             justify-content: center;
+            gap: 10px;
+            /* Reduced Gap */
+            padding-top: 10px;
+            /* Tighter Top padding */
+            padding-bottom: 10px;
+            /* Tighter Bottom padding */
         }
 
         .card-config {
@@ -266,9 +272,12 @@
         }
 
         .result-title-text {
-            font-size: 38px;
+            font-size: 32px;
             font-weight: 900;
-            color: var(--white);
+            background: var(--accent);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
             line-height: 1.1;
         }
 
@@ -865,6 +874,16 @@
                 notifyChar = await uartService.getCharacteristic(UART_NOTIFY_CHAR_UUID).catch(() => null);
                 if (notifyChar && (notifyChar.properties.notify || notifyChar.properties.indicate)) {
                     await notifyChar.startNotifications();
+                    notifyChar.addEventListener('characteristicvaluechanged', (event) => {
+                        const value = event.target.value;
+                        const decoder = new TextDecoder();
+                        const text = decoder.decode(value).trim();
+                        // Logic from Arduino
+                        if (text === '0' && !isProcessing) {
+                            console.log("Received 0 from Micro:bit. Auto-capturing...");
+                            captureAndAnalyze();
+                        }
+                    });
                 }
                 bleConnected = true;
                 updateConnectionUI();
